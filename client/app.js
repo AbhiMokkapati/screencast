@@ -13,7 +13,15 @@
   const statConn   = document.getElementById('stat-conn');
 
   // ─── WebSocket ───────────────────────────────────────────────────────────────
-  const wsUrl = `ws://${location.host}`;
+  // Access token comes from the URL printed by the server (?t=...) and is
+  // remembered for this tab so reloads keep working.
+  let token = new URLSearchParams(location.search).get('t');
+  try {
+    if (token) sessionStorage.setItem('sc-token', token);
+    else token = sessionStorage.getItem('sc-token');
+  } catch { /* storage unavailable */ }
+  const wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const wsUrl = `${wsProto}://${location.host}/?t=${encodeURIComponent(token || '')}`;
   let ws = null;
   let reconnectDelay = 1000;
   let pingTime = 0;

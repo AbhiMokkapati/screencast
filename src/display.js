@@ -1,4 +1,4 @@
-const { execSync, exec } = require('child_process');
+const { execSync, execFile } = require('child_process');
 const fs   = require('fs');
 const os   = require('os');
 const path = require('path');
@@ -67,8 +67,12 @@ function checkVirtualDisplayDriver() {
  */
 function addVirtualMonitor({ width = 1920, height = 1080, refreshRate = 60 } = {}) {
   return new Promise((resolve) => {
-    const cmd = `virtual-display-driver-cli add --width ${width} --height ${height} --refresh-rate ${refreshRate}`;
-    exec(cmd, (err, stdout, stderr) => {
+    const ok = (n, min, max) => Number.isInteger(n) && n >= min && n <= max;
+    if (!ok(width, 320, 8192) || !ok(height, 240, 8192) || !ok(refreshRate, 24, 240)) {
+      return resolve({ ok: false, message: 'invalid width/height/refreshRate' });
+    }
+    const args = ['add', '--width', String(width), '--height', String(height), '--refresh-rate', String(refreshRate)];
+    execFile('virtual-display-driver-cli', args, { shell: true }, (err, stdout, stderr) => {
       if (err) {
         resolve({ ok: false, message: stderr || err.message });
       } else {

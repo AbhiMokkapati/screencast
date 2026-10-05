@@ -76,6 +76,10 @@ function startDaemon() {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 
+  // Don't let the daemon alone keep Node alive (lets tests exit; server stays up via HTTP).
+  proc.unref();
+  for (const st of [proc.stdin, proc.stdout, proc.stderr]) if (st.unref) st.unref();
+
   // First output from PS means the C# compiled and the loop is running
   proc.stdout.once('data', () => {
     ready = true;
@@ -118,6 +122,8 @@ function setMonitorContext(bounds) {
 }
 
 function toScreen(nx, ny) {
+  nx = Math.min(1, Math.max(0, Number(nx) || 0));
+  ny = Math.min(1, Math.max(0, Number(ny) || 0));
   return {
     x: Math.round(monitorBounds.x + nx * monitorBounds.w),
     y: Math.round(monitorBounds.y + ny * monitorBounds.h),
@@ -152,7 +158,7 @@ function handleInput(event) {
       const { x, y } = toScreen(event.x, event.y);
       send({ t: 'mv', x, y });
       // Windows: positive delta = scroll UP, so negate our "dy>0 = down" convention
-      const delta = Math.round(-(event.dy || 0) * 360);
+      const delta = Math.round(-Math.max(-50, Math.min(50, Number(event.dy) || 0)) * 360);
       if (delta !== 0) send({ t: 'wh', d: delta });
       break;
     }
@@ -162,7 +168,7 @@ function handleInput(event) {
       break;
     }
     case 'keychar':
-      if (event.char) send({ t: 'txt', s: event.char });
+      if (typeof event.char === 'string' && event.char.length > 0 && event.char.length <= 8) send({ t: 'txt', s: event.char });
       break;
   }
 }

@@ -4,3 +4,6 @@ selfIdentity.plist
 **/selfIdentity.plist
 .claude/
 *.log
+.env
+*.pem
+*.key

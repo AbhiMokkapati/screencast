@@ -85,7 +85,7 @@ echo.
 echo  ============================================================
 echo   iPad Safari URL:
 echo.
-echo      http://[%TUNNEL_IP%]:9001
+echo      http://[%TUNNEL_IP%]:9001/?t=TOKEN   (TOKEN is printed by the server below)
 echo.
 echo   Tip: Tap the URL bar in Safari, paste the address above.
 echo   (Include the square brackets around the IPv6 address.)

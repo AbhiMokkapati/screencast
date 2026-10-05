@@ -4,8 +4,8 @@ const PING_INTERVAL_MS  = 20_000;  // ping every 20s
 const PONG_TIMEOUT_MS   =  8_000;  // kill if no pong within 8s
 const MAX_BUFFERED_BYTES = 2 * 1024 * 1024; // 2 MB — drop frame if client is behind
 
-function createTransport(httpServer) {
-  const wss = new WebSocketServer({ server: httpServer });
+function createTransport(httpServer, { verifyClient } = {}) {
+  const wss = new WebSocketServer({ server: httpServer, verifyClient, maxPayload: 64 * 1024 });
   const clients = new Set();
   let messageHandler = null;
 

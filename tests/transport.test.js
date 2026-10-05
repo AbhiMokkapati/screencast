@@ -112,3 +112,17 @@ test('broadcast is a no-op with zero clients connected', () => {
   // Never listen — no clients can connect
   assert.doesNotThrow(() => broadcast(Buffer.from([0xFF, 0xD8, 0xFF, 0xD9])));
 });
+
+test('verifyClient rejects connections it does not approve', async () => {
+  const server = http.createServer();
+  createTransport(server, { verifyClient: ({ req }) => req.url.includes('t=ok') });
+  const port = await listenOnFreePort(server);
+
+  await assert.rejects(wsConnect(port), 'connection without token must be refused');
+  const ws = await new Promise((resolve, reject) => {
+    const c = new WebSocket(`ws://127.0.0.1:${port}/?t=ok`);
+    c.once('open', () => resolve(c));
+    c.once('error', reject);
+  });
+  await closeAll(ws, server);
+});
