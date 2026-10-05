@@ -69,3 +69,13 @@ test('handleInput does not throw with missing optional fields', () => {
   assert.doesNotThrow(() => handleInput({}));                   // missing everything
   assert.doesNotThrow(() => handleInput(null));                 // null
 });
+
+test('escapeSendKeys wraps every SendKeys metacharacter exactly once', () => {
+  const { escapeSendKeys } = require('../src/input');
+  assert.equal(escapeSendKeys('+'), '{+}');
+  assert.equal(escapeSendKeys('('), '{(}');
+  assert.equal(escapeSendKeys('{'), '{{}');
+  assert.equal(escapeSendKeys('}'), '{}}');
+  assert.equal(escapeSendKeys('a^b%c~'), 'a{^}b{%}c{~}');
+  assert.equal(escapeSendKeys('hello world'), 'hello world');
+});

@@ -45,11 +45,7 @@ while ($true) {
         [W32]::keybd_event($c.k, 0, [W32]::KeyUp, [IntPtr]::Zero)
       }
       'txt'  {
-        $s = $c.s
-        foreach ($ch in '+^%~(){}[]'.ToCharArray()) {
-          $s = $s.Replace([string]$ch, "{$ch}")
-        }
-        [System.Windows.Forms.SendKeys]::SendWait($s)
+        [System.Windows.Forms.SendKeys]::SendWait($c.s)
       }
     }
   } catch { }
@@ -67,6 +63,12 @@ const VK = {
   F5:  0x74, F6:  0x75, F7:  0x76, F8:  0x77,
   F9:  0x78, F10: 0x79, F11: 0x7A, F12: 0x7B,
 };
+
+// SendKeys treats these as modifiers/grouping; each must be wrapped in braces to type literally.
+// Done in one pass: escaping { and } separately would re-escape the braces added for other chars.
+function escapeSendKeys(str) {
+  return str.replace(/[+^%~(){}[\]]/g, '{$&}');
+}
 
 let proc = null;
 let ready = false;
@@ -168,7 +170,7 @@ function handleInput(event) {
       break;
     }
     case 'keychar':
-      if (typeof event.char === 'string' && event.char.length > 0 && event.char.length <= 8) send({ t: 'txt', s: event.char });
+      if (typeof event.char === 'string' && event.char.length > 0 && event.char.length <= 8) send({ t: 'txt', s: escapeSendKeys(event.char) });
       break;
   }
 }
@@ -183,4 +185,4 @@ function stopDaemon() {
 // Start the daemon immediately on module load
 startDaemon();
 
-module.exports = { handleInput, setMonitorContext, stopDaemon };
+module.exports = { handleInput, setMonitorContext, stopDaemon, escapeSendKeys };

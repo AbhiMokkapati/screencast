@@ -10,12 +10,7 @@ const { handleInput, setMonitorContext }      = require('./src/input');
 const { listMonitors, checkVirtualDisplayDriver, addVirtualMonitor, getSetupGuide } = require('./src/display');
 
 // Load config file written by install.ps1, with env vars as overrides
-let fileConfig = {};
-try {
-  fileConfig = JSON.parse(require('fs').readFileSync(
-    require('path').join(__dirname, 'screencast.config.json'), 'utf8'
-  ));
-} catch { /* no config file yet — use defaults */ }
+const fileConfig = require('./src/config').loadConfig(__dirname);
 
 const PORT    = parseInt(process.env.PORT    || fileConfig.port    || '9001');
 const MONITOR = parseInt(process.env.MONITOR || (fileConfig.monitor ?? 1));

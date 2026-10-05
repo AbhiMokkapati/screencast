@@ -39,3 +39,15 @@ test('out-of-range monitor index throws with helpful message', () => {
     }
   );
 });
+
+const path = require('path');
+test('startCapture reports a missing ffmpeg as an error event instead of crashing', async () => {
+  const { startCapture } = require('../src/capture');
+  const origPath = process.env.PATH;
+  // keep only the PowerShell dir so bounds lookup works but ffmpeg cannot be found
+  process.env.PATH = path.join(process.env.SystemRoot || 'C:\Windows', 'System32', 'WindowsPowerShell', 'v1.0');
+  let cap;
+  try { cap = startCapture({ monitorIndex: 0 }); } finally { process.env.PATH = origPath; }
+  const err = await new Promise((resolve) => cap.once('error', resolve));
+  assert.match(err.message, /ffmpeg/);
+});

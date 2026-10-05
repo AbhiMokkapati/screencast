@@ -185,7 +185,7 @@ $config = [PSCustomObject]@{
   port    = 9001
 } | ConvertTo-Json
 
-$config | Out-File -FilePath (Join-Path $ProjectDir 'screencast.config.json') -Encoding utf8
+[System.IO.File]::WriteAllText((Join-Path $ProjectDir 'screencast.config.json'), $config, (New-Object System.Text.UTF8Encoding $false))
 Write-Ok "Config saved to screencast.config.json"
 
 # ── 8. Create launcher.bat ────────────────────────────────────────────────────

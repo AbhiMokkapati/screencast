@@ -119,15 +119,23 @@
 
   let touches        = new Map();  // id → {startX,startY,startTime,lastX,lastY}
   let isDragging     = false;
+  let multiTouch     = false;  // a 2+ finger gesture is in progress; never turn it into a drag
   let longPressTimer = null;
   let scrollPrevY    = null;
   let panelOpen      = false;
 
+  // The canvas uses object-fit: contain, so the frame may be letterboxed inside its
+  // element box. Map touches against the drawn frame, not the whole element.
   function norm(cx, cy) {
     const r = canvas.getBoundingClientRect();
+    const scale = canvas.width && canvas.height ? Math.min(r.width / canvas.width, r.height / canvas.height) : 1;
+    const w = canvas.width  ? canvas.width  * scale : r.width;
+    const h = canvas.height ? canvas.height * scale : r.height;
+    const left = r.left + (r.width  - w) / 2;
+    const top  = r.top  + (r.height - h) / 2;
     return {
-      x: Math.max(0, Math.min(1, (cx - r.left) / r.width)),
-      y: Math.max(0, Math.min(1, (cy - r.top)  / r.height)),
+      x: Math.max(0, Math.min(1, (cx - left) / w)),
+      y: Math.max(0, Math.min(1, (cy - top)  / h)),
     };
   }
 
@@ -159,6 +167,7 @@
       showHoldRing(t.clientX, t.clientY, false);
 
     } else if (touches.size === 2) {
+      multiTouch = true;
       clearLongPress();
       const vals = [...touches.values()];
       scrollPrevY = (vals[0].lastY + vals[1].lastY) / 2;
@@ -174,6 +183,7 @@
     }
 
     if (touches.size === 1) {
+      if (multiTouch) return;
       const t = e.changedTouches[0];
       const info = touches.get(t.identifier);
       if (!info) return;
@@ -231,6 +241,7 @@
 
     if (touches.size === 0) {
       isDragging   = false;
+      multiTouch   = false;
       scrollPrevY  = null;
     }
   }, { passive: false });
@@ -238,7 +249,10 @@
   canvas.addEventListener('touchcancel', (e) => {
     for (const t of e.changedTouches) touches.delete(t.identifier);
     clearLongPress();
+    // Release the held button, otherwise the PC keeps the mouse pressed after a system-cancelled drag
+    if (isDragging) send({ type: 'mouseup', button: 0, ...norm(e.changedTouches[0].clientX, e.changedTouches[0].clientY) });
     isDragging = false;
+    if (touches.size === 0) multiTouch = false;
     scrollPrevY = null;
   }, { passive: false });
 

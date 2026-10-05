@@ -99,6 +99,11 @@ function startCapture({
     if (s) console.error('[ffmpeg]', s);
   });
 
+  // Spawn failure (e.g. ffmpeg not on PATH) is async; without a listener it crashes the process.
+  proc.on('error', (err) => {
+    emitter.emit('error', new Error(`could not run ffmpeg: ${err.message}`));
+  });
+
   proc.on('close', (code) => {
     if (code !== 0 && code !== null) {
       emitter.emit('error', new Error(`ffmpeg exited with code ${code}`));
