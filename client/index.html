@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>ScreenCast</title>
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      width: 100%; height: 100%;
+      background: #000;
+      overflow: hidden;
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+
+    #screen {
+      display: block;
+      width: 100%; height: 100%;
+      object-fit: contain;
+    }
+
+    /* ── Status banner ── */
+    #status {
+      position: fixed;
+      top: 14px; left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0,0,0,0.72);
+      color: #fff;
+      font: 500 13px/1 -apple-system, sans-serif;
+      padding: 7px 16px;
+      border-radius: 20px;
+      white-space: nowrap;
+      pointer-events: none;
+      transition: opacity 0.5s;
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+    }
+    #status.hidden { opacity: 0; }
+
+    /* ── Settings button ── */
+    #settings-btn {
+      position: fixed;
+      bottom: 22px; right: 20px;
+      width: 44px; height: 44px;
+      background: rgba(255,255,255,0.15);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer;
+      transition: background 0.2s;
+      z-index: 10;
+    }
+    #settings-btn:active { background: rgba(255,255,255,0.3); }
+    #settings-btn svg { width: 22px; height: 22px; fill: #fff; }
+
+    /* ── Settings panel ── */
+    #panel {
+      position: fixed;
+      bottom: 0; right: 0;
+      width: 260px;
+      background: rgba(28,28,30,0.92);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-radius: 18px 0 0 0;
+      padding: 20px 20px 34px;
+      transform: translateY(100%) translateX(100%);
+      transition: transform 0.3s cubic-bezier(0.4,0,0.2,1);
+      z-index: 20;
+      color: #fff;
+      font: 14px/1.4 -apple-system, sans-serif;
+    }
+    #panel.open { transform: translateY(0) translateX(0); }
+
+    .panel-title {
+      font-size: 17px;
+      font-weight: 600;
+      margin-bottom: 18px;
+      color: #f2f2f7;
+    }
+
+    .stat-row {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      color: #ebebf5cc;
+      font-size: 13px;
+    }
+    .stat-row span:last-child { color: #f2f2f7; font-weight: 500; }
+
+    .divider {
+      height: 1px;
+      background: rgba(255,255,255,0.12);
+      margin: 14px 0;
+    }
+
+    .panel-btn {
+      display: block;
+      width: 100%;
+      padding: 12px;
+      background: rgba(255,255,255,0.1);
+      border-radius: 12px;
+      border: none;
+      color: #fff;
+      font: 500 15px -apple-system, sans-serif;
+      text-align: center;
+      cursor: pointer;
+      margin-bottom: 10px;
+      transition: background 0.15s;
+      -webkit-appearance: none;
+    }
+    .panel-btn:active { background: rgba(255,255,255,0.2); }
+    .panel-btn.accent { background: #0a84ff; }
+    .panel-btn.accent:active { background: #0070d6; }
+
+    /* ── Touch ripple ── */
+    .ripple {
+      position: fixed;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.35);
+      pointer-events: none;
+      transform: scale(0);
+      animation: ripple-anim 0.5s ease-out forwards;
+      z-index: 5;
+    }
+    @keyframes ripple-anim {
+      to { transform: scale(1); opacity: 0; }
+    }
+
+    /* ── Long-press ring ── */
+    #hold-ring {
+      position: fixed;
+      width: 52px; height: 52px;
+      border-radius: 50%;
+      border: 2.5px solid rgba(255,255,255,0.7);
+      pointer-events: none;
+      display: none;
+      transform: translate(-50%, -50%) scale(0.4);
+      transition: transform 0.55s cubic-bezier(0.2,0,0,1), opacity 0.1s;
+      z-index: 5;
+    }
+    #hold-ring.show { display: block; transform: translate(-50%, -50%) scale(1); }
+    #hold-ring.fire { opacity: 0; }
+
+    /* ── Hidden keyboard proxy ── */
+    #kb-proxy {
+      position: fixed;
+      opacity: 0;
+      width: 0; height: 0;
+      bottom: 0; left: 0;
+      font-size: 16px; /* prevent iOS zoom on focus */
+    }
+  </style>
+</head>
+<body>
+  <canvas id="screen"></canvas>
+
+  <div id="status">Connecting…</div>
+
+  <div id="hold-ring"></div>
+
+  <!-- Settings toggle -->
+  <div id="settings-btn" role="button" aria-label="Settings">
+    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+      <path d="M12 15.5A3.5 3.5 0 0 1 8.5 12 3.5 3.5 0 0 1 12 8.5a3.5 3.5 0 0 1 3.5 3.5 3.5 3.5 0 0 1-3.5 3.5m7.43-2.92c.04-.34.07-.69.07-1.08s-.03-.74-.07-1.08l2.32-1.81c.21-.16.27-.45.14-.69l-2.2-3.81c-.13-.24-.42-.32-.66-.24l-2.74 1.1c-.57-.44-1.18-.81-1.86-1.08l-.42-2.92A.51.51 0 0 0 14 2h-4c-.25 0-.46.18-.5.42l-.42 2.92c-.68.27-1.3.64-1.86 1.08L4.48 5.32c-.24-.08-.53 0-.66.24l-2.2 3.81c-.14.24-.08.53.14.69l2.32 1.81C4.03 12.26 4 12.61 4 13s.03.74.07 1.08L1.75 15.89c-.21.16-.27.45-.14.69l2.2 3.81c.13.24.42.32.66.24l2.74-1.1c.57.44 1.18.81 1.86 1.08l.42 2.92c.04.24.25.42.5.42h4c.25 0 .46-.18.5-.42l.42-2.92c.68-.27 1.3-.64 1.86-1.08l2.74 1.1c.24.08.53 0 .66-.24l2.2-3.81c.14-.24.08-.53-.14-.69l-2.32-1.81z"/>
+    </svg>
+  </div>
+
+  <!-- Settings panel -->
+  <div id="panel">
+    <div class="panel-title">ScreenCast</div>
+
+    <div class="stat-row"><span>FPS</span><span id="stat-fps">—</span></div>
+    <div class="stat-row"><span>Latency</span><span id="stat-latency">—</span></div>
+    <div class="stat-row"><span>Resolution</span><span id="stat-res">—</span></div>
+    <div class="stat-row"><span>Status</span><span id="stat-conn">Connecting</span></div>
+
+    <div class="divider"></div>
+
+    <button class="panel-btn accent" id="btn-keyboard">Show Keyboard</button>
+    <button class="panel-btn" id="btn-esc">Send Escape</button>
+    <button class="panel-btn" id="btn-winkey">Send Win Key</button>
+  </div>
+
+  <!-- iOS keyboard proxy — focused to summon software keyboard -->
+  <input id="kb-proxy" type="text" autocomplete="off" autocorrect="off"
+         autocapitalize="none" spellcheck="false" enterkeyhint="send" />
+
+  <script src="app.js"></script>
+</body>
+</html>
