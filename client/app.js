@@ -38,7 +38,7 @@
     };
 
     ws.onclose = () => {
-      setStatus(`Reconnecting in ${reconnectDelay / 1000}s…`);
+      setStatus(token ? `Reconnecting in ${reconnectDelay / 1000}s…` : 'Access token missing: open the full URL printed by the server');
       setConnStat('Disconnected');
       setTimeout(connect, reconnectDelay);
       reconnectDelay = Math.min(reconnectDelay * 1.5, 10000);
