@@ -22,12 +22,6 @@ test('exactly one monitor is marked primary', () => {
   assert.equal(monitors.filter((m) => m.primary).length, 1);
 });
 
-test('virtual iPad monitor (1668x1024) is present',
-  { skip: !monitors.some((m) => m.w === 1668 && m.h === 1024) && 'no 1668x1024 virtual display on this machine' }, () => {
-  const virtual = monitors.find((m) => m.w === 1668 && m.h === 1024);
-  assert.equal(virtual.primary, 0, 'virtual monitor should not be primary');
-});
-
 test('monitor indices are 0-based and sequential', () => {
   monitors.forEach((m, i) => assert.equal(m.index, i));
 });

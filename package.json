@@ -6,15 +6,33 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "list-displays": "node -e \"const {listMonitors,checkVirtualDisplayDriver,getSetupGuide}=require('./src/display'); const m=listMonitors(); m.forEach(d=>console.log(`  [${d.index}] ${d.w}x${d.h} at (${d.x},${d.y})${d.primary?' PRIMARY':''} — ${d.name}`)); const v=checkVirtualDisplayDriver(); console.log(v?`\\nVirtual display driver: ${v}`:'\\nNo virtual display driver detected.'); if(!v){const g=getSetupGuide();console.log('\\nSetup steps:');g.steps.forEach(s=>console.log(' •',s));}\""  ,
+    "list-displays": "node -e \"const {listMonitors,checkVirtualDisplayDriver,getSetupGuide}=require('./src/display'); const m=listMonitors(); m.forEach(d=>console.log(`  [${d.index}] ${d.w}x${d.h} at (${d.x},${d.y})${d.primary?' PRIMARY':''} — ${d.name}`)); const v=checkVirtualDisplayDriver(); console.log(v?`\\nVirtual display driver: ${v}`:'\\nNo virtual display driver detected.'); if(!v){const g=getSetupGuide();console.log('\\nSetup steps:');g.steps.forEach(s=>console.log(' •',s));}\"",
     "test": "node --test",
     "kill-port": "powershell -NoProfile -Command \"$c=Get-NetTCPConnection -LocalPort 9001 -EA SilentlyContinue; if($c){Stop-Process -Id $c.OwningProcess -Force; Write-Host 'Stopped.'}else{Write-Host 'Nothing on port 9001.'}\""
   },
   "dependencies": {
     "express": "^4.18.2",
+    "node-forge": "^1.4.0",
     "ws": "^8.16.0"
   },
   "engines": {
     "node": ">=18"
-  }
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AbhiMokkapati/screencast.git"
+  },
+  "keywords": [
+    "ipad",
+    "second-screen",
+    "screen-sharing",
+    "windows",
+    "h264",
+    "webcodecs"
+  ],
+  "os": [
+    "win32"
+  ],
+  "author": "Abhi Mokkapati"
 }

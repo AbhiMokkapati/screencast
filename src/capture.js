@@ -1,5 +1,7 @@
 const { spawn, execSync } = require('child_process');
 const { EventEmitter } = require('events');
+const { createH264Parser } = require('./h264');
+const { encoderArgs, pixFmt } = require('./encoder');
 
 const SOI = Buffer.from([0xff, 0xd8]);
 const EOI = Buffer.from([0xff, 0xd9]);
@@ -78,6 +80,27 @@ function buildFfmpegArgs({ bounds, fps, quality, outW, outH }) {
   ];
 }
 
+/** H.264 needs even dimensions (4:2:0 chroma). */
+function evenSize({ w, h }) { return { w: w - (w % 2), h: h - (h % 2) }; }
+
+function buildH264Args({ bounds, fps, outW, outH, encoder, bitrateMbps, gop }) {
+  return [
+    '-loglevel', 'warning',
+    '-f', 'gdigrab',
+    '-framerate', String(fps),
+    '-offset_x', String(bounds.x),
+    '-offset_y', String(bounds.y),
+    '-video_size', `${bounds.w}x${bounds.h}`,
+    '-draw_mouse', '1',
+    '-i', 'desktop',
+    '-vf', `fps=${fps},scale=${outW}:${outH},format=${pixFmt(encoder)}`,
+    ...encoderArgs(encoder, { bitrateMbps, gop }),
+    '-flush_packets', '1',
+    '-f', 'h264',
+    'pipe:1',
+  ];
+}
+
 const MAX_FRAME_BYTES = 32 * 1024 * 1024; // a "frame" with no EOI this long is garbage
 
 /**
@@ -121,6 +144,10 @@ function createFrameParser(onFrame) {
  *   quality       — JPEG quality 2–31, lower = better (default 5)
  *   scaleWidth    — output width in px (default: native monitor width)
  *   scaleHeight   — output height in px (default: native monitor height)
+ *   codec         — 'mjpeg' (default) emits 'frame' (a JPEG Buffer);
+ *                   'h264' emits 'config' (avcC message) and 'video' (message Buffer, isKey)
+ *   encoder       — h264 only: an ffmpeg encoder name from src/encoder.js
+ *   bitrateMbps   — h264 only (default 8)
  */
 function startCapture({
   monitorIndex = 1,
@@ -128,14 +155,19 @@ function startCapture({
   quality = 5,
   scaleWidth,
   scaleHeight,
+  codec = 'mjpeg',
+  encoder = 'libx264',
+  bitrateMbps = 8,
 } = {}) {
   const emitter = new EventEmitter();
 
   const bounds = getMonitorBounds(monitorIndex);
-  const { w: outW, h: outH } = computeOutputSize(bounds, scaleWidth, scaleHeight);
+  const sized = computeOutputSize(bounds, scaleWidth, scaleHeight);
+  const { w: outW, h: outH } = codec === 'h264' ? evenSize(sized) : sized;
 
   console.log(
-    `[capture] Monitor ${monitorIndex}: ${bounds.w}x${bounds.h} at (${bounds.x},${bounds.y}) → output ${outW}x${outH} @ ${fps}fps`
+    `[capture] Monitor ${monitorIndex}: ${bounds.w}x${bounds.h} at (${bounds.x},${bounds.y}) → output ${outW}x${outH} @ ${fps}fps` +
+    (codec === 'h264' ? ` [${encoder} ${bitrateMbps} Mbit/s]` : ' [mjpeg]')
   );
 
   // Expose the actual output dimensions so input.js can map touch coords correctly
@@ -143,7 +175,9 @@ function startCapture({
   emitter.outputHeight = outH;
   emitter.monitorBounds = bounds;
 
-  const args = buildFfmpegArgs({ bounds, fps, quality, outW, outH });
+  const args = codec === 'h264'
+    ? buildH264Args({ bounds, fps, outW, outH, encoder, bitrateMbps, gop: fps }) // 1 keyframe/s bounds recovery time
+    : buildFfmpegArgs({ bounds, fps, quality, outW, outH });
 
   const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
@@ -167,10 +201,17 @@ function startCapture({
     }
   });
 
-  proc.stdout.on('data', createFrameParser((frame) => emitter.emit('frame', frame)));
+  if (codec === 'h264') {
+    proc.stdout.on('data', createH264Parser({
+      onConfig: (msg) => emitter.emit('config', msg),
+      onFrame:  (msg, isKey) => emitter.emit('video', msg, isKey),
+    }));
+  } else {
+    proc.stdout.on('data', createFrameParser((frame) => emitter.emit('frame', frame)));
+  }
 
   emitter.stop = () => proc.kill('SIGTERM');
   return emitter;
 }
 
-module.exports = { startCapture, getMonitorBounds, computeOutputSize, buildFfmpegArgs, createFrameParser };
+module.exports = { startCapture, getMonitorBounds, computeOutputSize, evenSize, buildFfmpegArgs, buildH264Args, createFrameParser };

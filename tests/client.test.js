@@ -56,7 +56,7 @@ function boot({ search = '?t=tok', stored = {} } = {}) {
   FakeWS.OPEN = 1;
   const store = { ...stored };
   const ctx = {
-    document: { getElementById: (id) => (els[id] ||= makeEl(id)), createElement: () => makeEl('x'), body: { appendChild() {} } },
+    document: { addEventListener() {}, hidden: false, getElementById: (id) => (els[id] ||= makeEl(id)), createElement: () => makeEl('x'), body: { appendChild() {} } },
     location: { search, host: 'pc:9001', protocol: 'http:' },
     sessionStorage: { getItem: (k) => store[k] ?? null, setItem: (k, v) => { store[k] = v; } },
     WebSocket: FakeWS,
@@ -274,10 +274,28 @@ test('nothing is sent while the socket is not open', () => {
 test('every event type the client sends is one input.js handles (or the ping handled by the server)', () => {
   const sentTypes = new Set([...appJs.matchAll(/type:\s*'(\w+)'/g)].map((m) => m[1]));
   const inputSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'input.js'), 'utf8');
-  const appSrc   = fs.readFileSync(path.join(__dirname, '..', 'src', 'app.js'), 'utf8');
+  const appSrc   = fs.readFileSync(path.join(__dirname, '..', 'src', 'app.js'), 'utf8') +
+    fs.readFileSync(path.join(__dirname, '..', 'src', 'transport.js'), 'utf8'); // ack is handled in the transport
   for (const t of sentTypes) {
     if (t === 'pong') continue; // server → client message type that the client matches on
     const handled = inputSrc.includes(`case '${t}'`) || appSrc.includes(`'${t}'`);
     assert.ok(handled, `client sends "${t}" but no server handler exists`);
   }
+});
+
+// ─── video messages ──────────────────────────────────────────────────────────
+test('an H.264 config on a page without WebCodecs (plain HTTP) shows a message instead of throwing', () => {
+  const h = boot();
+  h.ws.open();
+  assert.doesNotThrow(() => h.ws.onmessage({ data: new Uint8Array([1, 1, 100, 0, 40]).buffer }));
+  assert.match(h.els.status.textContent, /https/);
+});
+
+test('video frames with no decoder are acked so the server never stalls, and JPEG frames still route to the JPEG path', () => {
+  const h = boot();
+  h.ws.open();
+  h.ws.onmessage({ data: new Uint8Array([2, 0, 0, 0, 1]).buffer });
+  h.ws.onmessage({ data: new Uint8Array([3, 0, 0, 0, 1]).buffer });
+  assert.equal(h.msgs().filter((m) => m.type === 'ack').length, 2);
+  assert.doesNotThrow(() => h.ws.onmessage({ data: new Uint8Array([0xFF, 0xD8, 0xFF, 0xD9]).buffer }));
 });

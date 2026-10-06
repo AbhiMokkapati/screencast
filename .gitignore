@@ -7,3 +7,5 @@ selfIdentity.plist
 .env
 *.pem
 *.key
+certs/
+screencast.config.json

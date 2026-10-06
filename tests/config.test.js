@@ -32,7 +32,19 @@ test('config that is valid JSON but not an object falls back to empty defaults',
 test('resolveSettings: defaults', () => {
   assert.deepEqual(resolveSettings({}, {}), {
     port: 9001, monitor: 1, fps: 30, quality: 5, scaleW: undefined, scaleH: undefined, token: '',
+    codec: 'h264', codecExplicit: false, encoder: 'auto', bitrate: 8, https: true, caPort: undefined,
   });
+});
+
+test('resolveSettings: codec / encoder / bitrate / https are validated, env beats file', () => {
+  const r = resolveSettings({ CODEC: 'MJPEG', ENCODER: 'h264_nvenc', BITRATE: '20', SCREENCAST_HTTPS: 'off' },
+    { codec: 'h264', encoder: 'libx264', bitrate: 4, https: true });
+  assert.equal(r.codec, 'mjpeg');
+  assert.equal(r.encoder, 'h264_nvenc');
+  assert.equal(r.bitrate, 20);
+  assert.equal(r.https, false);
+  const bad = resolveSettings({ CODEC: 'vp9', ENCODER: 'rm -rf', BITRATE: '0', SCREENCAST_HTTPS: 'maybe' }, {});
+  assert.deepEqual([bad.codec, bad.encoder, bad.bitrate, bad.https], ['h264', 'auto', 8, true]);
 });
 
 test('resolveSettings: MONITOR=0 is honoured (0 is falsy but valid) from env and file', () => {

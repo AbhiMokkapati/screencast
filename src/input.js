@@ -32,6 +32,19 @@ while ($true) {
   $line = $line.Trim()
   if ($line.Length -eq 0) { continue }
   try {
+    if ($line[0] -ne '{') {
+      # Fast path for hot mouse events: "t a b" (no JSON parsing)
+      $p = $line.Split(' ')
+      switch ($p[0]) {
+        'mv' { [W32]::SetCursorPos([int]$p[1], [int]$p[2]) | Out-Null }
+        'ld' { [W32]::mouse_event([W32]::LDown, 0,0,0,[IntPtr]::Zero) }
+        'lu' { [W32]::mouse_event([W32]::LUp,   0,0,0,[IntPtr]::Zero) }
+        'rd' { [W32]::mouse_event([W32]::RDown, 0,0,0,[IntPtr]::Zero) }
+        'ru' { [W32]::mouse_event([W32]::RUp,   0,0,0,[IntPtr]::Zero) }
+        'wh' { [W32]::mouse_event([W32]::Wheel, 0,0,[int]$p[1],[IntPtr]::Zero) }
+      }
+      continue
+    }
     $c = $line | ConvertFrom-Json
     switch ($c.t) {
       'mv'   { [W32]::SetCursorPos($c.x, $c.y) | Out-Null }
@@ -124,10 +137,42 @@ function startDaemon() {
 
 function send(obj) {
   if (sender) { sender(obj); return; }
+  if (obj.t === 'mv') {
+    pendingMove = serialize(obj);
+    if (!moveTimer) { moveTimer = setTimeout(flushMove, MOVE_FLUSH_MS); moveTimer.unref(); }
+    return;
+  }
+  flushMove();
+  write(serialize(obj));
+}
+
+function write(line) {
   if (!proc || !ready) return;
   try {
-    proc.stdin.write(JSON.stringify(obj) + '\n');
+    proc.stdin.write(line + '\n');
   } catch { /* pipe closed, daemon restarting */ }
+}
+
+// Cursor moves arrive faster than PowerShell can apply them; a backlog shows up as cursor lag.
+// Keep only the newest pending move and flush it on a short timer. Any other command flushes it
+// first so ordering (move, then click) is preserved.
+const MOVE_FLUSH_MS = 8;
+let pendingMove = null;
+let moveTimer = null;
+
+function flushMove() {
+  clearTimeout(moveTimer);
+  moveTimer = null;
+  if (pendingMove) { write(pendingMove); pendingMove = null; }
+}
+
+function serialize(obj) {
+  switch (obj.t) {
+    case 'mv': return `mv ${obj.x} ${obj.y}`;
+    case 'wh': return `wh ${obj.d}`;
+    case 'ld': case 'lu': case 'rd': case 'ru': return obj.t;
+    default:   return JSON.stringify(obj);
+  }
 }
 
 function setSender(fn) { sender = fn; }
@@ -194,6 +239,9 @@ function stopDaemon() {
   stopping = true;
   clearTimeout(restartTimer);
   clearTimeout(readyTimer);
+  clearTimeout(moveTimer);
+  pendingMove = null;
+  moveTimer = null;
   if (proc) {
     try { proc.stdin.end(); } catch { /* ignore */ }
     try { proc.kill(); } catch { /* ignore */ }

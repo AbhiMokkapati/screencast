@@ -1,5 +1,6 @@
 const express = require('express');
 const http    = require('http');
+const https   = require('https');
 const path    = require('path');
 const crypto  = require('crypto');
 
@@ -11,8 +12,9 @@ const ok = (n, min, max) => Number.isInteger(n) && n >= min && n <= max;
  * Builds the HTTP + WebSocket server with all access control wired in.
  * Everything with side effects (display listing, input injection) is injected so the
  * wiring can be tested without PowerShell, ffmpeg or a real display.
+ * With `tls` ({ key, cert }) the server speaks HTTPS/WSS; otherwise plain HTTP.
  */
-function createApp({ token, display, handleInput, clientDir }) {
+function createApp({ token, display, handleInput, clientDir, tls }) {
   const TOKEN = token || crypto.randomBytes(16).toString('hex');
   const tokenHash = crypto.createHash('sha256').update(TOKEN).digest();
 
@@ -37,7 +39,7 @@ function createApp({ token, display, handleInput, clientDir }) {
   }
 
   const app    = express();
-  const server = http.createServer(app);
+  const server = tls ? https.createServer({ key: tls.key, cert: tls.cert }, app) : http.createServer(app);
 
   app.disable('x-powered-by');
   app.use((_req, res, next) => {
@@ -86,7 +88,7 @@ function createApp({ token, display, handleInput, clientDir }) {
     res.status(status).json({ error: status === 500 ? 'internal error' : 'bad request' });
   });
 
-  const { broadcast, onClientMessage } = createTransport(server, { verifyClient });
+  const { broadcast, broadcastVideo, setVideoConfig, onClientMessage } = createTransport(server, { verifyClient });
 
   onClientMessage((msg, replyFn) => {
     try {
@@ -102,7 +104,7 @@ function createApp({ token, display, handleInput, clientDir }) {
     }
   });
 
-  return { app, server, broadcast, token: TOKEN, tokenOk };
+  return { app, server, broadcast, broadcastVideo, setVideoConfig, token: TOKEN, tokenOk };
 }
 
 /**

@@ -144,3 +144,141 @@ test('a throwing message handler does not crash the process and the socket stays
   } finally { console.error = origErr; }
   await closeAll(ws, server);
 });
+
+test('flow control: newest frame wins and is sent only after the client acks', async () => {
+  const server = http.createServer();
+  const { broadcast } = createTransport(server);
+  const port = await listenOnFreePort(server);
+  const ws   = await wsConnect(port);
+  const got  = [];
+  ws.on('message', (m) => got.push(m[0]));
+  const wait = () => new Promise((r) => setTimeout(r, 60));
+
+  for (let i = 1; i <= 5; i++) broadcast(Buffer.from([i]));
+  await wait();
+  assert.deepEqual(got, [1, 2], 'only 2 frames may be in flight before an ack');
+
+  ws.send('{"type":"ack"}');
+  await wait();
+  assert.deepEqual(got, [1, 2, 5], 'after an ack the NEWEST frame is sent; stale 3 and 4 are dropped');
+
+  await closeAll(ws, server);
+});
+
+test('unchanged frames are not re-sent, and a new client gets the current frame on connect', async () => {
+  const server = http.createServer();
+  const { broadcast } = createTransport(server);
+  const port = await listenOnFreePort(server);
+  const ws   = await wsConnect(port);
+  const got  = [];
+  ws.on('message', (m) => got.push(m[0]));
+  const wait = () => new Promise((r) => setTimeout(r, 60));
+
+  broadcast(Buffer.from([7])); broadcast(Buffer.from([7])); broadcast(Buffer.from([7]));
+  await wait();
+  assert.deepEqual(got, [7], 'identical frames are sent once');
+
+  const lateGot = [];
+  const late = new WebSocket(`ws://127.0.0.1:${port}`); // listener must exist before the first frame lands
+  late.on('message', (m) => lateGot.push(m[0]));
+  await wait();
+  const lateOk = lateGot.length === 1 && lateGot[0] === 7;
+  await closeAll(ws, late, server);
+  assert.ok(lateOk, 'late joiner receives the latest frame immediately');
+});
+
+// ─── H.264 flow control ──────────────────────────────────────────────────────
+function collect(ws) {
+  const got = [];
+  ws.on('message', (m) => got.push([...m]));
+  return got;
+}
+const settle = () => new Promise((r) => setTimeout(r, 60));
+
+test('video: config goes to existing and late clients; nothing is decoded before a key frame', async () => {
+  const server = http.createServer();
+  const { setVideoConfig, broadcastVideo } = createTransport(server);
+  const port = await listenOnFreePort(server);
+
+  const a = new WebSocket(`ws://127.0.0.1:${port}`);
+  const gotA = collect(a);
+  await new Promise((r) => a.once('open', r));
+  setVideoConfig(Buffer.from([1, 0xAA]));
+  await settle();
+  assert.deepEqual(gotA, [[1, 0xAA]]);
+
+  broadcastVideo(Buffer.from([3, 1]), false);              // delta before any key frame: useless to a new decoder
+  await settle();
+  assert.deepEqual(gotA, [[1, 0xAA]], 'deltas are withheld until a key frame');
+
+  broadcastVideo(Buffer.from([2, 2]), true);
+  broadcastVideo(Buffer.from([3, 3]), false);
+  await settle();
+  assert.deepEqual(gotA.slice(1), [[2, 2], [3, 3]]);
+
+  const b = new WebSocket(`ws://127.0.0.1:${port}`);
+  const gotB = collect(b);
+  await new Promise((r) => b.once('open', r));
+  await settle();
+  assert.deepEqual(gotB, [[1, 0xAA]], 'late client gets the config straight away');
+
+  await closeAll(a, b, server);
+});
+
+test('video: a client that stops acking is cut off at the in-flight limit and resumes on a key frame', async () => {
+  const server = http.createServer();
+  const { setVideoConfig, broadcastVideo } = createTransport(server);
+  const port = await listenOnFreePort(server);
+  const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+  const got = collect(ws);
+  await new Promise((r) => ws.once('open', r));
+  setVideoConfig(Buffer.from([1, 9]));
+
+  broadcastVideo(Buffer.from([2, 0]), true);
+  for (let i = 1; i <= 20; i++) broadcastVideo(Buffer.from([3, i]), false);
+  await settle();
+  const frames = got.filter((m) => m[0] !== 1);
+  assert.equal(frames.length, 8, 'at most 8 unacked frames are in flight');
+  assert.deepEqual(frames[0], [2, 0]);
+
+  broadcastVideo(Buffer.from([3, 99]), false);
+  await settle();
+  assert.equal(got.filter((m) => m[0] !== 1).length, 8, 'still behind: nothing more is sent');
+
+  for (let i = 0; i < 8; i++) ws.send('{"type":"ack"}');
+  await settle();
+  broadcastVideo(Buffer.from([3, 100]), false);
+  await settle();
+  assert.equal(got.filter((m) => m[0] !== 1).length, 8, 'after the cut-off even deltas wait for a key frame');
+  broadcastVideo(Buffer.from([2, 101]), true);
+  broadcastVideo(Buffer.from([3, 102]), false);
+  await settle();
+  assert.deepEqual(got.filter((m) => m[0] !== 1).slice(8), [[2, 101], [3, 102]]);
+
+  await closeAll(ws, server);
+});
+
+test('video: a keyframe request from the client holds back deltas until the next key frame', async () => {
+  const server = http.createServer();
+  const { broadcastVideo } = createTransport(server);
+  const port = await listenOnFreePort(server);
+  const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+  const got = collect(ws);
+  await new Promise((r) => ws.once('open', r));
+
+  broadcastVideo(Buffer.from([2, 1]), true);
+  broadcastVideo(Buffer.from([3, 2]), false);
+  await settle();
+  assert.equal(got.length, 2);
+
+  ws.send('{"type":"keyframe"}');
+  await settle();
+  broadcastVideo(Buffer.from([3, 3]), false);
+  await settle();
+  assert.equal(got.length, 2, 'delta withheld after the client lost sync');
+  broadcastVideo(Buffer.from([2, 4]), true);
+  await settle();
+  assert.deepEqual(got.at(-1), [2, 4]);
+
+  await closeAll(ws, server);
+});

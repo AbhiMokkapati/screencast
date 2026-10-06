@@ -13,7 +13,7 @@ where ffmpeg >nul 2>&1
 if errorlevel 1 (
     echo.
     echo  [ERROR] ffmpeg not found on PATH.
-    echo  Run setup.ps1 as Administrator to reinstall it.
+    echo  Run install.ps1 as Administrator to reinstall it.
     echo.
     pause
     exit /b 1

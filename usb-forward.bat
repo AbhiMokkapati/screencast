@@ -41,9 +41,29 @@ if not errorlevel 1 (
 echo  iPad detected.
 echo.
 
-:: ── Step 2: Start iOS 17+ kernel tunnel ─────────────────────────────────────
+where node >nul 2>&1
+if errorlevel 1 (
+    echo  [ERROR] node not found. Run install.ps1 as Administrator first.
+    pause
+    exit /b 1
+)
+
+:: Keep the access token stable across restarts, so the iPad's open page keeps working.
+:: (A token set in screencast.config.json or SCREENCAST_TOKEN is left alone.)
+if not defined SCREENCAST_TOKEN (
+    findstr /i "\"token\"" screencast.config.json >nul 2>&1
+    if errorlevel 1 for /f %%T in ('powershell -NoProfile -Command "[guid]::NewGuid().ToString('N')"') do set "SCREENCAST_TOKEN=%%T"
+)
+
+:: ── Supervisor loop ──────────────────────────────────────────────────────────
+:: The iPad locking or sleeping drops the tunnel. When that happens, restart go-ios, wait for
+:: the tunnel interface, and restart the server too (its HTTPS certificate covers the tunnel IP
+:: as of server start, and the IP can change).
+:supervise
 echo  [2/4] Starting USB tunnel (admin mode)...
 set "ENABLE_GO_IOS_AGENT=kernel"
+taskkill /f /fi "WINDOWTITLE eq go-ios-tunnel" >nul 2>&1
+taskkill /f /fi "WINDOWTITLE eq screencast-server" >nul 2>&1
 start "go-ios-tunnel" /min "%IOS_EXE%" tunnel start
 
 :: Use a temp .ps1 to avoid inline quoting issues when polling tun0
@@ -58,12 +78,10 @@ timeout /t 2 /nobreak >nul
 set /a WAIT_COUNT+=1
 if %WAIT_COUNT% gtr 15 (
     echo.
-    echo  [ERROR] Tunnel did not start in 30s.
-    echo  Make sure iPad is unlocked, trusted, and try again.
-    echo.
+    echo  Tunnel did not start in 30s. Is the iPad unlocked and trusted? Retrying...
     taskkill /f /fi "WINDOWTITLE eq go-ios-tunnel" >nul 2>&1
-    pause
-    exit /b 1
+    timeout /t 3 /nobreak >nul
+    goto supervise
 )
 for /f "tokens=*" %%I in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%GET_IP_PS%" 2^>nul') do set TUNNEL_IP=%%I
 if "%TUNNEL_IP%"=="" goto waitloop
@@ -71,35 +89,53 @@ if "%TUNNEL_IP%"=="" goto waitloop
 echo  Tunnel ready.
 echo.
 
-:: ── Step 3: Start ScreenCast server ─────────────────────────────────────────
-echo  [3/4] Verifying node and server...
-where node >nul 2>&1
-if errorlevel 1 (
-    echo  [ERROR] node not found. Run setup.ps1 as Administrator first.
-    pause
-    exit /b 1
-)
+echo  [3/4] Server starting...
+start "screencast-server" cmd /c "node server.js"
 
-echo  [4/4] Server starting...
 echo.
 echo  ============================================================
 echo   iPad Safari URL:
 echo.
-echo      http://[%TUNNEL_IP%]:9001/?t=TOKEN   (TOKEN is printed by the server below)
+echo      https://[%TUNNEL_IP%]:9001/?t=TOKEN   (TOKEN is printed in the server window)
+echo      First time only: trust the PC at http://[%TUNNEL_IP%]:9002/ (see the server window).
 echo.
 echo   Tip: Tap the URL bar in Safari, paste the address above.
 echo   (Include the square brackets around the IPv6 address.)
 echo  ============================================================
 echo.
-echo  Press Ctrl+C to stop.
+echo  [4/4] Watching the tunnel. Close this window to stop everything.
 echo.
 
-node server.js
+:: ── Watchdog: every 5s, check go-ios, the tunnel interface and the server ─────
+:watch
+timeout /t 5 /nobreak >nul
+tasklist /fi "WINDOWTITLE eq go-ios-tunnel" 2>nul | findstr /i "ios.exe" >nul
+if errorlevel 1 (
+    echo  [%TIME%] go-ios exited - restarting tunnel and server...
+    goto supervise
+)
+set CUR_IP=
+for /f "tokens=*" %%I in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%GET_IP_PS%" 2^>nul') do set CUR_IP=%%I
+if "%CUR_IP%"=="" (
+    echo  [%TIME%] tunnel interface is gone - restarting tunnel and server...
+    goto supervise
+)
+if not "%CUR_IP%"=="%TUNNEL_IP%" (
+    echo  [%TIME%] tunnel address changed to %CUR_IP% - restarting server...
+    goto supervise
+)
+tasklist /fi "WINDOWTITLE eq screencast-server" 2>nul | findstr /i "cmd.exe node.exe" >nul
+if errorlevel 1 (
+    echo  [%TIME%] server window closed - stopping.
+    goto cleanup
+)
+goto watch
 
-:: ── Cleanup ──────────────────────────────────────────────────────────────────
+:cleanup
 echo.
 echo  Stopping USB tunnel...
 taskkill /f /fi "WINDOWTITLE eq go-ios-tunnel" >nul 2>&1
+taskkill /f /fi "WINDOWTITLE eq screencast-server" >nul 2>&1
 del "%GET_IP_PS%" >nul 2>&1
 timeout /t 1 /nobreak >nul
 echo  Done. Press any key to close.

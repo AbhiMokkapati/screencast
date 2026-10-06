@@ -26,33 +26,49 @@
   let reconnectDelay = 1000;
   let pingTime = 0;
   let pingTimer = null;
+  let deadTimer = null;     // fires when a ping goes unanswered: the socket is dead (e.g. after the iPad slept)
+  let reconnectTimer = null;
 
   function connect() {
-    ws = new WebSocket(wsUrl);
-    ws.binaryType = 'arraybuffer';
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    const sock = new WebSocket(wsUrl);
+    ws = sock;
+    sock.binaryType = 'arraybuffer';
 
-    ws.onopen = () => {
+    sock.onopen = () => {
+      if (ws !== sock) return;
       reconnectDelay = 1000;
       setStatus('Connected', true);
       setConnStat('Connected');
       schedulePing();
     };
 
-    ws.onclose = () => {
+    sock.onclose = (evt) => {
+      if (ws !== sock) return;          // a superseded socket must not start another reconnect chain
       clearTimeout(pingTimer);
-      setStatus(token ? `Reconnecting in ${reconnectDelay / 1000}s…` : 'Access token missing: open the full URL printed by the server');
+      clearTimeout(deadTimer);
+      closeDecoder();
+      const why = evt && evt.code ? ` (code ${evt.code}${evt.reason ? ': ' + evt.reason : ''})` : '';
+      setStatus(token ? `Reconnecting in ${Math.round(reconnectDelay / 100) / 10}s…${why}` : 'Access token missing: open the full URL printed by the server');
       setConnStat('Disconnected');
-      setTimeout(connect, reconnectDelay);
+      clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(connect, reconnectDelay);
       reconnectDelay = Math.min(reconnectDelay * 1.5, 10000);
     };
 
-    ws.onerror = () => ws.close();
+    sock.onerror = () => sock.close();
 
-    ws.onmessage = (evt) => {
+    sock.onmessage = (evt) => {
+      if (ws !== sock) return;
       if (typeof evt.data === 'string') {
         try { handleServerMessage(JSON.parse(evt.data)); } catch { /* ignore malformed */ }
       } else {
-        renderFrame(evt.data);
+        // Binary: a JPEG starts with 0xFF; video messages start with a type byte (see src/h264.js).
+        const kind = new Uint8Array(evt.data, 0, 1)[0];
+        if (kind === 0xFF) renderFrame(evt.data);
+        else if (kind === MSG_CONFIG) configureDecoder(new Uint8Array(evt.data, 1));
+        else if (kind === MSG_KEY || kind === MSG_DELTA) decodeVideo(kind === MSG_KEY, new Uint8Array(evt.data, 1));
       }
     };
   }
@@ -63,21 +79,51 @@
     }
   }
 
+  // Safari freezes a backgrounded/locked page and its socket dies silently, so onclose may never
+  // fire. On resume, drop whatever socket is there and reconnect straight away.
+  function reconnectNow() {
+    if (ws && ws.readyState === WebSocket.CONNECTING) return;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      // Looks alive, but verify: an unanswered ping closes it (see schedulePing).
+      pingTime = performance.now();
+      send({ type: 'ping' });
+      armDeadTimer();
+      return;
+    }
+    reconnectDelay = 1000;
+    connect();
+  }
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) reconnectNow(); });
+  window.addEventListener('pageshow', (e) => { if (e.persisted) reconnectNow(); });
+  window.addEventListener('online', reconnectNow);
+
   // ─── Ping / latency ──────────────────────────────────────────────────────────
   // One ping chain only: a stray timer from a previous connection would otherwise start a
   // second chain on the new socket after every reconnect.
+  function armDeadTimer() {
+    clearTimeout(deadTimer);
+    const sock = ws;
+    deadTimer = setTimeout(() => {
+      try { sock.close(); } catch { /* already closed */ }
+      // close() on a dead socket can take very long to report; treat it as closed shortly after
+      deadTimer = setTimeout(() => { if (ws === sock && sock.onclose) sock.onclose({ code: 4000, reason: 'ping timeout' }); }, 1500);
+    }, 6000);
+  }
+
   function schedulePing() {
     clearTimeout(pingTimer);
     pingTimer = setTimeout(() => {
       if (ws && ws.readyState === WebSocket.OPEN) {
         pingTime = performance.now();
         send({ type: 'ping' });
+        armDeadTimer();
       }
     }, 2000);
   }
 
   function handleServerMessage(msg) {
     if (msg.type === 'pong') {
+      clearTimeout(deadTimer);
       const lat = Math.round(performance.now() - pingTime);
       statLat.textContent = `${lat} ms`;
       clearTimeout(pingTimer);
@@ -97,7 +143,18 @@
     fpsLastTime = now;
   }, 1000);
 
+  // Newest-frame-wins: if a decode is running, remember only the latest buffer and decode that next.
+  // Each decoded frame is acked so the server never has more than a couple of frames in flight.
+  let decoding = false;
+  let pendingBuf = null;
+
   function renderFrame(buf) {
+    if (decoding) {
+      if (pendingBuf) send({ type: 'ack' }); // superseded frame still frees a server slot
+      pendingBuf = buf;
+      return;
+    }
+    decoding = true;
     createImageBitmap(new Blob([buf], { type: 'image/jpeg' })).then((bmp) => {
       if (canvas.width !== bmp.width || canvas.height !== bmp.height) {
         canvas.width  = bmp.width;
@@ -107,7 +164,113 @@
       ctx.drawImage(bmp, 0, 0);
       bmp.close();
       frameCount++;
-    }).catch(() => {});
+    }).catch(() => {}).then(() => {
+      decoding = false;
+      send({ type: 'ack' });
+      if (pendingBuf) { const next = pendingBuf; pendingBuf = null; renderFrame(next); }
+    });
+  }
+
+  // ─── H.264 via WebCodecs ─────────────────────────────────────────────────────
+  // The server sends length-prefixed (AVCC) samples plus an avcC description, so the browser's
+  // hardware decoder can be used directly. WebCodecs only exists on secure (HTTPS) pages.
+  const MSG_CONFIG = 1, MSG_KEY = 2, MSG_DELTA = 3;
+  const MAX_DECODE_QUEUE = 4;   // frames waiting to decode before we give up and resync on a key frame
+  const FRAME_US = 33333;       // nominal timestamp step; only ordering matters
+
+  let decoder = null;
+  let decoderCfg = null;
+  let needKey = true;
+  let nextTs = 0;
+  let paintFrame = null;        // newest decoded VideoFrame, painted on the next animation frame
+  let paintQueued = false;
+
+  function closeDecoder() {
+    if (decoder) { try { decoder.close(); } catch { /* already closed */ } }
+    if (paintFrame) { paintFrame.close(); paintFrame = null; }
+    decoder = null;
+    decoderCfg = null;
+    needKey = true;
+  }
+
+  function sameBytes(a, b) {
+    if (!a || !b || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  }
+
+  function requestKeyFrame() {
+    needKey = true;
+    send({ type: 'keyframe' });
+  }
+
+  function configureDecoder(avcc) {
+    if (typeof VideoDecoder === 'undefined') {
+      setStatus('This browser cannot decode video on this page. Open the https:// address printed by the server.');
+      return;
+    }
+    if (decoder && sameBytes(decoderCfg, avcc)) return;
+    closeDecoder();
+    const hex = (b) => b.toString(16).padStart(2, '0');
+    decoderCfg = avcc.slice();
+    decoder = new VideoDecoder({
+      output: (frame) => {
+        if (paintFrame) paintFrame.close();   // newest wins
+        paintFrame = frame;
+        if (!paintQueued) { paintQueued = true; requestAnimationFrame(paintVideo); }
+        send({ type: 'ack' });
+      },
+      error: () => {                        // decode error: rebuild the decoder and wait for a key frame
+        const cfg = decoderCfg;
+        closeDecoder();
+        if (cfg) configureDecoder(cfg);
+      },
+    });
+    try {
+      decoder.configure({
+        codec: 'avc1.' + hex(avcc[1]) + hex(avcc[2]) + hex(avcc[3]),
+        description: decoderCfg,
+        optimizeForLatency: true,
+      });
+    } catch {
+      closeDecoder();
+      setStatus('Video decoder rejected the stream; set "codec": "mjpeg" in screencast.config.json');
+      return;
+    }
+    needKey = true;
+    send({ type: 'keyframe' });
+  }
+
+  function decodeVideo(isKey, data) {
+    if (!decoder || decoder.state !== 'configured') { send({ type: 'ack' }); return; }
+    if (needKey && !isKey) { send({ type: 'ack' }); return; }   // waiting for a key frame
+    if (!isKey && decoder.decodeQueueSize > MAX_DECODE_QUEUE) {
+      requestKeyFrame();                                         // can't keep up: resync
+      return;
+    }
+    needKey = false;
+    try {
+      decoder.decode(new EncodedVideoChunk({ type: isKey ? 'key' : 'delta', timestamp: nextTs, data }));
+      nextTs += FRAME_US;
+    } catch {
+      requestKeyFrame();
+    }
+  }
+
+  function paintVideo() {
+    paintQueued = false;
+    const frame = paintFrame;
+    paintFrame = null;
+    if (!frame) return;
+    const w = frame.displayWidth, h = frame.displayHeight;
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width  = w;
+      canvas.height = h;
+      statRes.textContent = `${w}×${h}`;
+    }
+    ctx.drawImage(frame, 0, 0);
+    frame.close();
+    frameCount++;
   }
 
   // ─── Touch → input events ────────────────────────────────────────────────────
