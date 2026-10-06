@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { loadConfig } = require('../src/config');
+const { loadConfig, resolveSettings } = require('../src/config');
 
 function withConfig(bytes, fn) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sc-cfg-'));
@@ -23,4 +23,49 @@ test('plain UTF-8 config is loaded', () => {
 test('missing or corrupt config falls back to empty defaults', () => {
   assert.deepEqual(loadConfig(path.join(os.tmpdir(), 'sc-no-such-dir')), {});
   assert.deepEqual(withConfig('{not json', loadConfig), {});
+});
+
+test('config that is valid JSON but not an object falls back to empty defaults', () => {
+  for (const raw of ['null', '[1,2]', '"x"', '5']) assert.deepEqual(withConfig(raw, loadConfig), {}, raw);
+});
+
+test('resolveSettings: defaults', () => {
+  assert.deepEqual(resolveSettings({}, {}), {
+    port: 9001, monitor: 1, fps: 30, quality: 5, scaleW: undefined, scaleH: undefined, token: '',
+  });
+});
+
+test('resolveSettings: MONITOR=0 is honoured (0 is falsy but valid) from env and file', () => {
+  assert.equal(resolveSettings({ MONITOR: '0' }, { monitor: 2 }).monitor, 0);
+  assert.equal(resolveSettings({}, { monitor: 0 }).monitor, 0);
+});
+
+test('resolveSettings: env overrides file, file overrides default', () => {
+  const s = resolveSettings({ FPS: '60' }, { fps: 15, quality: 9, port: 9100 });
+  assert.equal(s.fps, 60);
+  assert.equal(s.quality, 9);
+  assert.equal(s.port, 9100);
+});
+
+test('resolveSettings: garbage never becomes NaN or out-of-range (falls through to the next source)', () => {
+  const s = resolveSettings({ PORT: 'abc', MONITOR: '-1', FPS: '', QUALITY: '99', SCALE_W: '1e3' },
+                            { port: 9100, monitor: null, fps: '45', quality: 8, scaleW: 1280 });
+  assert.equal(s.port, 9100);
+  assert.equal(s.monitor, 1);
+  assert.equal(s.fps, 45);
+  assert.equal(s.quality, 8);
+  assert.equal(s.scaleW, 1280);
+});
+
+test('resolveSettings: token from env beats file; numeric file token is stringified; empty env falls through', () => {
+  assert.equal(resolveSettings({ SCREENCAST_TOKEN: 'envtok' }, { token: 'filetok' }).token, 'envtok');
+  assert.equal(resolveSettings({}, { token: 12345 }).token, '12345');
+  assert.equal(resolveSettings({ SCREENCAST_TOKEN: '' }, { token: 'filetok' }).token, 'filetok');
+});
+
+test('the committed screencast.config.json loads and resolves to sane values', () => {
+  const file = loadConfig(path.join(__dirname, '..'));
+  assert.notDeepEqual(file, {}, 'committed config must parse (BOM-safe)');
+  const s = resolveSettings({}, file);
+  assert.ok(s.port >= 1 && s.fps >= 1 && s.quality >= 2 && s.monitor >= 0);
 });

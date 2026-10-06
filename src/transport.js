@@ -1,11 +1,13 @@
 const { WebSocketServer } = require('ws');
 
 const PING_INTERVAL_MS  = 20_000;  // ping every 20s
-const PONG_TIMEOUT_MS   =  8_000;  // kill if no pong within 8s
 const MAX_BUFFERED_BYTES = 2 * 1024 * 1024; // 2 MB — drop frame if client is behind
 
 function createTransport(httpServer, { verifyClient } = {}) {
   const wss = new WebSocketServer({ server: httpServer, verifyClient, maxPayload: 64 * 1024 });
+  // ws re-emits the HTTP server's errors (e.g. EADDRINUSE) on the wss; with no listener that
+  // throws, pre-empting the caller's own server 'error' handling.
+  wss.on('error', (err) => console.error('[ws] server error:', err.message));
   const clients = new Set();
   let messageHandler = null;
 
@@ -27,9 +29,6 @@ function createTransport(httpServer, { verifyClient } = {}) {
       if (ws.readyState === 1) ws.ping();
     }, PING_INTERVAL_MS);
 
-    // Give the first pong a longer window (client may be slow to load)
-    setTimeout(() => { alive = true; }, PONG_TIMEOUT_MS);
-
     ws.on('pong', () => { alive = true; });
 
     ws.on('message', (data) => {
@@ -37,7 +36,8 @@ function createTransport(httpServer, { verifyClient } = {}) {
         const reply = (msg) => {
           if (ws.readyState === 1) ws.send(msg);
         };
-        messageHandler(data.toString(), reply);
+        // A throwing handler must not become an uncaught exception that kills the server.
+        try { messageHandler(data.toString(), reply); } catch (err) { console.error('[ws] handler error:', err.message); }
       }
     });
 

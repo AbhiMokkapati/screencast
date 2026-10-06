@@ -1,81 +1,128 @@
-const { test, before, after } = require('node:test');
+const { test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
+const input  = require('../src/input');
+const { handleInput, setMonitorContext, setSender, escapeSendKeys, VK } = input;
 
-// We re-require with cache-busting so stopDaemon actually cleans up between test runs.
-// The daemon takes ~2-3s to compile C# on first launch — we start it once and reuse.
-let handleInput, setMonitorContext, stopDaemon;
+// Capture commands instead of driving the real PowerShell daemon (which would move the real mouse).
+let sent;
+beforeEach(() => { sent = []; setSender((c) => sent.push(c)); setMonitorContext({ x: 1920, y: 100, w: 1000, h: 500 }); });
+afterEach(() => setSender(null));
 
-before(() => {
-  // Clear cached module so we get a fresh daemon
-  delete require.cache[require.resolve('../src/input')];
-  ({ handleInput, setMonitorContext, stopDaemon } = require('../src/input'));
-});
-
-after(() => {
-  stopDaemon();
-});
-
-test('module exports the three expected functions', () => {
-  assert.equal(typeof handleInput,      'function', 'handleInput must be a function');
-  assert.equal(typeof setMonitorContext, 'function', 'setMonitorContext must be a function');
-  assert.equal(typeof stopDaemon,        'function', 'stopDaemon must be a function');
-});
-
-test('setMonitorContext accepts valid bounds without throwing', () => {
-  assert.doesNotThrow(() => setMonitorContext({ x: 1920, y: 0, w: 1668, h: 1024 }));
-});
-
-test('handleInput does not throw for all valid event types', () => {
-  const events = [
-    { type: 'mousemove', x: 0.5,  y: 0.5  },
-    { type: 'mousedown', x: 0.25, y: 0.75, button: 0 },
-    { type: 'mousedown', x: 0.25, y: 0.75, button: 2 },
-    { type: 'mouseup',   x: 0.25, y: 0.75, button: 0 },
-    { type: 'mouseup',   x: 0.25, y: 0.75, button: 2 },
-    { type: 'scroll',    x: 0.5,  y: 0.5,  dy:  0.5  },
-    { type: 'scroll',    x: 0.5,  y: 0.5,  dy: -0.5  },
-    { type: 'keydown',   key: 'Escape'     },
-    { type: 'keydown',   key: 'Enter'      },
-    { type: 'keydown',   key: 'Meta'       },
-    { type: 'keydown',   key: 'ArrowLeft'  },
-    { type: 'keydown',   key: 'UnknownKey' }, // unknown key — should be silently ignored
-    { type: 'keychar',   char: 'a'         },
-    { type: 'keychar',   char: ' '         },
-    { type: 'ping'                         }, // unknown type — should be silently ignored
-    { type: 'unknown_event_type'           },
-  ];
-  for (const e of events) {
-    assert.doesNotThrow(() => handleInput(e), `handleInput threw for event: ${JSON.stringify(e)}`);
+test('module exports the expected API and does not start a daemon on require', () => {
+  for (const fn of ['handleInput', 'setMonitorContext', 'startDaemon', 'stopDaemon', 'escapeSendKeys']) {
+    assert.equal(typeof input[fn], 'function', fn);
   }
 });
 
-test('handleInput does not throw for out-of-bounds normalized coords', () => {
-  // Coords outside 0-1 range (e.g. edge scroll) should not crash
-  const edgeCases = [
-    { type: 'mousemove', x: 0,    y: 0    },
-    { type: 'mousemove', x: 1,    y: 1    },
-    { type: 'mousemove', x: -0.1, y: 1.1  }, // outside bounds
-    { type: 'scroll',    x: 0.5,  y: 0.5, dy: 0 },
-  ];
-  for (const e of edgeCases) {
+test('mousemove maps normalized coords onto the monitor rectangle (secondary-monitor offset applied)', () => {
+  handleInput({ type: 'mousemove', x: 0.5, y: 0.5 });
+  assert.deepEqual(sent, [{ t: 'mv', x: 2420, y: 350 }]);
+});
+
+test('coords outside 0-1 and non-numeric coords are clamped to the monitor edges', () => {
+  handleInput({ type: 'mousemove', x: -5, y: 9 });
+  handleInput({ type: 'mousemove', x: 'abc', y: null });
+  handleInput({ type: 'mousemove', x: 1, y: 1 });
+  assert.deepEqual(sent, [
+    { t: 'mv', x: 1920, y: 600 },
+    { t: 'mv', x: 1920, y: 100 },
+    { t: 'mv', x: 2920, y: 600 },
+  ]);
+});
+
+test('negative monitor origin (monitor left of primary) is honoured', () => {
+  setMonitorContext({ x: -1920, y: 0, w: 1920, h: 1080 });
+  handleInput({ type: 'mousemove', x: 0, y: 0 });
+  assert.deepEqual(sent, [{ t: 'mv', x: -1920, y: 0 }]);
+});
+
+test('mousedown moves first, then presses the correct button', () => {
+  handleInput({ type: 'mousedown', x: 0, y: 0, button: 0 });
+  handleInput({ type: 'mousedown', x: 0, y: 0, button: 2 });
+  handleInput({ type: 'mousedown', x: 0, y: 0 }); // missing button → left
+  assert.deepEqual(sent.map((c) => c.t), ['mv', 'ld', 'mv', 'rd', 'mv', 'ld']);
+});
+
+test('mouseup releases the matching button', () => {
+  handleInput({ type: 'mouseup', button: 0 });
+  handleInput({ type: 'mouseup', button: 2 });
+  handleInput({ type: 'mouseup' });
+  assert.deepEqual(sent.map((c) => c.t), ['lu', 'ru', 'lu']);
+});
+
+test('scroll: client dy>0 (scroll down) becomes a NEGATIVE wheel delta; dy is clamped; zero sends no wheel event', () => {
+  handleInput({ type: 'scroll', x: 0, y: 0, dy: 1 });
+  handleInput({ type: 'scroll', x: 0, y: 0, dy: -1 });
+  handleInput({ type: 'scroll', x: 0, y: 0, dy: 1e9 });
+  handleInput({ type: 'scroll', x: 0, y: 0, dy: 0 });
+  handleInput({ type: 'scroll', x: 0, y: 0, dy: 'x' });
+  const wheels = sent.filter((c) => c.t === 'wh').map((c) => c.d);
+  assert.deepEqual(wheels, [-360, 360, -50 * 360]);
+});
+
+test('keydown: known keys map to their Windows virtual-key codes; unknown keys are ignored', () => {
+  for (const [key, vk] of [['Enter', 0x0D], ['Backspace', 0x08], ['Escape', 0x1B], ['Tab', 0x09], ['Meta', 0x5B]]) {
+    sent = [];
+    handleInput({ type: 'keydown', key });
+    assert.deepEqual(sent, [{ t: 'vk', k: vk }], key);
+  }
+  sent = [];
+  handleInput({ type: 'keydown', key: 'Nope' });
+  handleInput({ type: 'keydown', key: '__proto__' });
+  handleInput({ type: 'keydown', key: 'constructor' }); // inherited property, must not map
+  assert.deepEqual(sent, []);
+});
+
+test('every VK code fits in a byte (keybd_event takes a byte)', () => {
+  for (const [k, v] of Object.entries(VK)) assert.ok(Number.isInteger(v) && v > 0 && v <= 0xff, k);
+});
+
+test('every key the client sends has a VK mapping', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'client', 'app.js'), 'utf8');
+  const keys = [...src.matchAll(/type:\s*'keydown',\s*key:\s*'(\w+)'/g)].map((m) => m[1]);
+  assert.ok(keys.length >= 4, 'expected the client to send several keys');
+  for (const k of keys) assert.ok(k in VK, `client sends key "${k}" but input.js has no VK for it`);
+});
+
+test('keychar: escapes SendKeys metacharacters; rejects empty, oversized and non-string input', () => {
+  handleInput({ type: 'keychar', char: 'a' });
+  handleInput({ type: 'keychar', char: '+' });
+  handleInput({ type: 'keychar', char: '' });
+  handleInput({ type: 'keychar', char: 'x'.repeat(9) });
+  handleInput({ type: 'keychar', char: 5 });
+  handleInput({ type: 'keychar' });
+  assert.deepEqual(sent, [{ t: 'txt', s: 'a' }, { t: 'txt', s: '{+}' }]);
+});
+
+test('malformed events never throw and never send', () => {
+  for (const e of [null, undefined, 5, 'str', [], {}, { type: 'ping' }, { type: 'bogus' }]) {
     assert.doesNotThrow(() => handleInput(e));
   }
-});
-
-test('handleInput does not throw with missing optional fields', () => {
-  assert.doesNotThrow(() => handleInput({ type: 'scroll',   x: 0.5, y: 0.5 })); // missing dy
-  assert.doesNotThrow(() => handleInput({ type: 'mousedown', x: 0.5, y: 0.5 })); // missing button
-  assert.doesNotThrow(() => handleInput({ type: 'keychar' })); // missing char
-  assert.doesNotThrow(() => handleInput({}));                   // missing everything
-  assert.doesNotThrow(() => handleInput(null));                 // null
+  assert.deepEqual(sent, []);
 });
 
 test('escapeSendKeys wraps every SendKeys metacharacter exactly once', () => {
-  const { escapeSendKeys } = require('../src/input');
   assert.equal(escapeSendKeys('+'), '{+}');
   assert.equal(escapeSendKeys('('), '{(}');
   assert.equal(escapeSendKeys('{'), '{{}');
   assert.equal(escapeSendKeys('}'), '{}}');
+  assert.equal(escapeSendKeys('[]'), '{[}{]}');
   assert.equal(escapeSendKeys('a^b%c~'), 'a{^}b{%}c{~}');
   assert.equal(escapeSendKeys('hello world'), 'hello world');
+});
+
+// ─── real daemon lifecycle (no input is injected) ────────────────────────────
+test('stopDaemon does not trigger the crash-restart loop', async () => {
+  const logs = [];
+  const origLog = console.log, origWarn = console.warn;
+  console.log = (...a) => logs.push(a.join(' '));
+  console.warn = (...a) => logs.push(a.join(' '));
+  try {
+    input.startDaemon();
+    await new Promise((r) => setTimeout(r, 300));
+    input.stopDaemon();
+    await new Promise((r) => setTimeout(r, 3000)); // longer than the 2s restart delay
+  } finally { console.log = origLog; console.warn = origWarn; }
+  assert.equal(logs.filter((l) => /Starting PowerShell/.test(l)).length, 1, `daemon respawned after stop: ${logs.join(' | ')}`);
+  assert.equal(logs.filter((l) => /restarting/.test(l)).length, 0, 'must not schedule a restart after an intentional stop');
 });

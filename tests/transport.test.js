@@ -126,3 +126,21 @@ test('verifyClient rejects connections it does not approve', async () => {
   });
   await closeAll(ws, server);
 });
+
+test('a throwing message handler does not crash the process and the socket stays usable', async () => {
+  const server = http.createServer();
+  const { onClientMessage } = createTransport(server);
+  const port = await listenOnFreePort(server);
+  let calls = 0;
+  onClientMessage((msg, reply) => { calls++; if (calls === 1) throw new Error('boom'); reply('ok'); });
+
+  const ws = await wsConnect(port);
+  const origErr = console.error; console.error = () => {};
+  try {
+    const got = new Promise((r) => ws.once('message', r));
+    ws.send('first');
+    ws.send('second');
+    assert.equal((await got).toString(), 'ok');
+  } finally { console.error = origErr; }
+  await closeAll(ws, server);
+});

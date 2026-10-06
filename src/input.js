@@ -72,50 +72,65 @@ function escapeSendKeys(str) {
 
 let proc = null;
 let ready = false;
+let stopping = false;
+let readyTimer = null;
+let restartTimer = null;
+// Replaceable for tests: receives each command object destined for the PowerShell daemon.
+let sender = null;
 
 function startDaemon() {
-  proc = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', PS_SCRIPT], {
+  stopping = false;
+  const child = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', PS_SCRIPT], {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
+  proc = child;
 
   // Don't let the daemon alone keep Node alive (lets tests exit; server stays up via HTTP).
-  proc.unref();
-  for (const st of [proc.stdin, proc.stdout, proc.stderr]) if (st.unref) st.unref();
+  child.unref();
+  for (const st of [child.stdin, child.stdout, child.stderr]) if (st.unref) st.unref();
 
-  // First output from PS means the C# compiled and the loop is running
-  proc.stdout.once('data', () => {
+  // A write to a dead daemon surfaces as an async 'error' (EPIPE) on stdin, which try/catch
+  // around write() cannot see; unhandled, it would crash the whole server.
+  child.stdin.on('error', () => {});
+
+  const markReady = () => {
+    if (proc !== child || ready) return;
     ready = true;
     console.log('[input] PowerShell input daemon ready');
-  });
-
+  };
+  // First output from PS means the C# compiled and the loop is running
+  child.stdout.once('data', markReady);
   // Treat first stderr output as ready too (compilation messages go there)
-  proc.stderr.once('data', () => {
-    if (!ready) {
-      ready = true;
-      console.log('[input] PowerShell input daemon ready');
-    }
-  });
+  child.stderr.once('data', markReady);
 
-  proc.on('close', (code) => {
+  child.on('close', (code) => {
+    if (proc !== child) return; // stale daemon from before a restart
     ready = false;
-    if (code !== 0) {
+    clearTimeout(readyTimer);
+    if (!stopping && code !== 0) {
       console.warn(`[input] PS daemon exited (${code}), restarting in 2s…`);
-      setTimeout(startDaemon, 2000);
+      restartTimer = setTimeout(startDaemon, 2000);
+      restartTimer.unref();
     }
   });
 
   // Signal ready after a timeout even if we get no output (PS compiled silently)
-  setTimeout(() => { ready = true; }, 3000);
+  clearTimeout(readyTimer);
+  readyTimer = setTimeout(() => { if (proc === child) ready = true; }, 3000);
+  readyTimer.unref();
 
   console.log('[input] Starting PowerShell input daemon…');
 }
 
 function send(obj) {
+  if (sender) { sender(obj); return; }
   if (!proc || !ready) return;
   try {
     proc.stdin.write(JSON.stringify(obj) + '\n');
   } catch { /* pipe closed, daemon restarting */ }
 }
+
+function setSender(fn) { sender = fn; }
 
 let monitorBounds = { x: 0, y: 0, w: 1920, h: 1080 };
 
@@ -165,8 +180,8 @@ function handleInput(event) {
       break;
     }
     case 'keydown': {
-      const vk = VK[event.key];
-      if (vk !== undefined) send({ t: 'vk', k: vk });
+      // own-property check: VK['constructor'] / VK['__proto__'] must not count as keys
+      if (typeof event.key === 'string' && Object.hasOwn(VK, event.key)) send({ t: 'vk', k: VK[event.key] });
       break;
     }
     case 'keychar':
@@ -176,13 +191,13 @@ function handleInput(event) {
 }
 
 function stopDaemon() {
+  stopping = true;
+  clearTimeout(restartTimer);
+  clearTimeout(readyTimer);
   if (proc) {
     try { proc.stdin.end(); } catch { /* ignore */ }
-    proc.kill();
+    try { proc.kill(); } catch { /* ignore */ }
   }
 }
 
-// Start the daemon immediately on module load
-startDaemon();
-
-module.exports = { handleInput, setMonitorContext, stopDaemon, escapeSendKeys };
+module.exports = { handleInput, setMonitorContext, startDaemon, stopDaemon, escapeSendKeys, setSender, VK };

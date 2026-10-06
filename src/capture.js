@@ -9,6 +9,11 @@ const EOI = Buffer.from([0xff, 0xd9]);
  * Writes a temp .ps1 file to avoid inline quoting issues with -Command.
  */
 function getMonitorBounds(index) {
+  // index is interpolated into a PowerShell script: reject NaN, fractions and negatives
+  // (a negative index would silently select the *last* screen via $screens[-1]).
+  if (!Number.isInteger(index) || index < 0) {
+    throw new Error(`Invalid monitor index "${index}": must be a non-negative integer`);
+  }
   const fs   = require('fs');
   const path = require('path');
   const tmp  = path.join(require('os').tmpdir(), `screencast-monitor-${index}.ps1`);
@@ -44,6 +49,68 @@ function getMonitorBounds(index) {
   }
 }
 
+
+/**
+ * Output frame size. If only one of scaleWidth/scaleHeight is given, the other is derived
+ * from the monitor's aspect ratio (otherwise the picture is stretched).
+ */
+function computeOutputSize(bounds, scaleWidth, scaleHeight) {
+  if (scaleWidth && scaleHeight) return { w: scaleWidth, h: scaleHeight };
+  if (scaleWidth)  return { w: scaleWidth,  h: Math.max(1, Math.round(scaleWidth  * bounds.h / bounds.w)) };
+  if (scaleHeight) return { w: Math.max(1, Math.round(scaleHeight * bounds.w / bounds.h)), h: scaleHeight };
+  return { w: bounds.w, h: bounds.h };
+}
+
+function buildFfmpegArgs({ bounds, fps, quality, outW, outH }) {
+  return [
+    '-loglevel', 'warning',
+    '-f', 'gdigrab',
+    '-framerate', String(fps),
+    '-offset_x', String(bounds.x),
+    '-offset_y', String(bounds.y),
+    '-video_size', `${bounds.w}x${bounds.h}`,
+    '-draw_mouse', '1',
+    '-i', 'desktop',
+    '-vf', `fps=${fps},scale=${outW}:${outH}`,
+    '-f', 'mjpeg',
+    '-q:v', String(quality),
+    'pipe:1',
+  ];
+}
+
+const MAX_FRAME_BYTES = 32 * 1024 * 1024; // a "frame" with no EOI this long is garbage
+
+/**
+ * Splits a raw MJPEG byte stream into complete JPEG frames (SOI..EOI).
+ * Returns push(chunk); onFrame(Buffer) is called once per complete frame.
+ * Handles markers split across chunk boundaries and discards leading garbage.
+ */
+function createFrameParser(onFrame) {
+  let buf = Buffer.alloc(0);
+  let eoiFrom = 0;
+  return function push(chunk) {
+    buf = Buffer.concat([buf, chunk]);
+    while (true) {
+      const soi = buf.indexOf(SOI);
+      if (soi === -1) {
+        buf = buf.length > 1 ? buf.subarray(buf.length - 1) : buf; // keep a possible split 0xFF
+        eoiFrom = 0;
+        return;
+      }
+      if (soi > 0) { buf = buf.subarray(soi); eoiFrom = 0; }
+      const eoi = buf.indexOf(EOI, Math.max(2, eoiFrom));
+      if (eoi === -1) {
+        if (buf.length > MAX_FRAME_BYTES) { buf = Buffer.alloc(0); eoiFrom = 0; }
+        else eoiFrom = Math.max(0, buf.length - 1); // EOI may straddle the next chunk
+        return;
+      }
+      onFrame(Buffer.from(buf.subarray(0, eoi + 2)));
+      buf = buf.subarray(eoi + 2);
+      eoiFrom = 0;
+    }
+  };
+}
+
 /**
  * Starts FFmpeg screen capture for a specific monitor.
  * Emits 'frame' (Buffer containing a complete JPEG) and 'error' (Error).
@@ -65,8 +132,7 @@ function startCapture({
   const emitter = new EventEmitter();
 
   const bounds = getMonitorBounds(monitorIndex);
-  const outW = scaleWidth || bounds.w;
-  const outH = scaleHeight || bounds.h;
+  const { w: outW, h: outH } = computeOutputSize(bounds, scaleWidth, scaleHeight);
 
   console.log(
     `[capture] Monitor ${monitorIndex}: ${bounds.w}x${bounds.h} at (${bounds.x},${bounds.y}) → output ${outW}x${outH} @ ${fps}fps`
@@ -77,20 +143,7 @@ function startCapture({
   emitter.outputHeight = outH;
   emitter.monitorBounds = bounds;
 
-  const args = [
-    '-loglevel', 'warning',
-    '-f', 'gdigrab',
-    '-framerate', String(fps),
-    '-offset_x', String(bounds.x),
-    '-offset_y', String(bounds.y),
-    '-video_size', `${bounds.w}x${bounds.h}`,
-    '-draw_mouse', '1',
-    '-i', 'desktop',
-    '-vf', `fps=${fps},scale=${outW}:${outH}`,
-    '-f', 'mjpeg',
-    '-q:v', String(quality),
-    'pipe:1',
-  ];
+  const args = buildFfmpegArgs({ bounds, fps, quality, outW, outH });
 
   const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
@@ -100,45 +153,24 @@ function startCapture({
   });
 
   // Spawn failure (e.g. ffmpeg not on PATH) is async; without a listener it crashes the process.
+  let spawnFailed = false;
   proc.on('error', (err) => {
+    spawnFailed = true;
     emitter.emit('error', new Error(`could not run ffmpeg: ${err.message}`));
   });
 
   proc.on('close', (code) => {
-    if (code !== 0 && code !== null) {
+    // A failed spawn also fires 'close'; reporting it again would throw if the first
+    // error was handled by a one-shot listener.
+    if (!spawnFailed && code !== 0 && code !== null) {
       emitter.emit('error', new Error(`ffmpeg exited with code ${code}`));
     }
   });
 
-  // Parse raw MJPEG byte stream into discrete JPEG frames
-  let buf = Buffer.alloc(0);
-  let searchFrom = 0;
-
-  proc.stdout.on('data', (chunk) => {
-    buf = Buffer.concat([buf, chunk]);
-
-    while (true) {
-      const soiIdx = buf.indexOf(SOI, searchFrom);
-      if (soiIdx === -1) {
-        buf = buf.length > 1 ? buf.slice(buf.length - 1) : buf;
-        searchFrom = 0;
-        break;
-      }
-
-      const eoiIdx = buf.indexOf(EOI, soiIdx + 2);
-      if (eoiIdx === -1) {
-        searchFrom = soiIdx;
-        break;
-      }
-
-      emitter.emit('frame', buf.slice(soiIdx, eoiIdx + 2));
-      buf = buf.slice(eoiIdx + 2);
-      searchFrom = 0;
-    }
-  });
+  proc.stdout.on('data', createFrameParser((frame) => emitter.emit('frame', frame)));
 
   emitter.stop = () => proc.kill('SIGTERM');
   return emitter;
 }
 
-module.exports = { startCapture, getMonitorBounds };
+module.exports = { startCapture, getMonitorBounds, computeOutputSize, buildFfmpegArgs, createFrameParser };

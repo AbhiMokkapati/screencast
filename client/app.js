@@ -25,6 +25,7 @@
   let ws = null;
   let reconnectDelay = 1000;
   let pingTime = 0;
+  let pingTimer = null;
 
   function connect() {
     ws = new WebSocket(wsUrl);
@@ -38,6 +39,7 @@
     };
 
     ws.onclose = () => {
+      clearTimeout(pingTimer);
       setStatus(token ? `Reconnecting in ${reconnectDelay / 1000}s…` : 'Access token missing: open the full URL printed by the server');
       setConnStat('Disconnected');
       setTimeout(connect, reconnectDelay);
@@ -48,7 +50,7 @@
 
     ws.onmessage = (evt) => {
       if (typeof evt.data === 'string') {
-        handleServerMessage(JSON.parse(evt.data));
+        try { handleServerMessage(JSON.parse(evt.data)); } catch { /* ignore malformed */ }
       } else {
         renderFrame(evt.data);
       }
@@ -62,8 +64,11 @@
   }
 
   // ─── Ping / latency ──────────────────────────────────────────────────────────
+  // One ping chain only: a stray timer from a previous connection would otherwise start a
+  // second chain on the new socket after every reconnect.
   function schedulePing() {
-    setTimeout(() => {
+    clearTimeout(pingTimer);
+    pingTimer = setTimeout(() => {
       if (ws && ws.readyState === WebSocket.OPEN) {
         pingTime = performance.now();
         send({ type: 'ping' });
@@ -75,7 +80,8 @@
     if (msg.type === 'pong') {
       const lat = Math.round(performance.now() - pingTime);
       statLat.textContent = `${lat} ms`;
-      setTimeout(schedulePing, 3000);
+      clearTimeout(pingTimer);
+      pingTimer = setTimeout(schedulePing, 3000);
     }
   }
 
@@ -120,6 +126,8 @@
   let touches        = new Map();  // id → {startX,startY,startTime,lastX,lastY}
   let isDragging     = false;
   let multiTouch     = false;  // a 2+ finger gesture is in progress; never turn it into a drag
+  let multiStart     = 0;      // when the current 2-finger gesture began
+  let multiScrolled  = false;  // 2-finger gesture turned into a scroll (so it is not a tap)
   let longPressTimer = null;
   let scrollPrevY    = null;
   let panelOpen      = false;
@@ -168,6 +176,8 @@
 
     } else if (touches.size === 2) {
       multiTouch = true;
+      multiStart = Date.now();
+      multiScrolled = false;
       clearLongPress();
       const vals = [...touches.values()];
       scrollPrevY = (vals[0].lastY + vals[1].lastY) / 2;
@@ -193,7 +203,7 @@
       if (movedEnough && !isDragging) {
         clearLongPress();
         isDragging = true;
-        send({ type: 'mousedown', ...norm(t.clientX, t.clientY), button: 0 });
+        send({ type: 'mousedown', ...norm(info.startX, info.startY), button: 0 });
       }
 
       if (isDragging) {
@@ -209,6 +219,7 @@
         const t = e.changedTouches[0];
         send({ type: 'scroll', ...norm(t.clientX, t.clientY), dy: delta / 60 });
         scrollPrevY = centerY;
+        multiScrolled = true;
       }
     }
   }, { passive: false });
@@ -240,6 +251,13 @@
     }
 
     if (touches.size === 0) {
+      if (multiTouch && !multiScrolled && !isDragging && Date.now() - multiStart < TAP_MAX_MS) {
+        // Quick two-finger tap → right click at the last touch position
+        const t = e.changedTouches[0];
+        const pos = norm(t.clientX, t.clientY);
+        send({ type: 'mousedown', ...pos, button: 2 });
+        setTimeout(() => send({ type: 'mouseup', ...pos, button: 2 }), 30);
+      }
       isDragging   = false;
       multiTouch   = false;
       scrollPrevY  = null;

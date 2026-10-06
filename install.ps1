@@ -169,7 +169,7 @@ Write-Host "  Performance settings (press Enter to accept defaults):" -Foregroun
 $fpsInput = Read-Host "  FPS [30] (higher = smoother, needs faster WiFi)"
 $fps = if ($fpsInput -match '^\d+$') { [int]$fpsInput } else { 30 }
 
-$qualInput = Read-Host "  Quality 2-15 [5] (lower number = better quality, more bandwidth)"
+$qualInput = Read-Host "  Quality 2-31 [5] (lower number = better quality, more bandwidth)"
 $quality = if ($qualInput -match '^\d+$') { [int]$qualInput } else { 5 }
 
 Write-Ok "FPS: $fps   Quality: $quality"
@@ -188,32 +188,15 @@ $config = [PSCustomObject]@{
 [System.IO.File]::WriteAllText((Join-Path $ProjectDir 'screencast.config.json'), $config, (New-Object System.Text.UTF8Encoding $false))
 Write-Ok "Config saved to screencast.config.json"
 
-# ── 8. Create launcher.bat ────────────────────────────────────────────────────
+# ── 8. Launcher ───────────────────────────────────────────────────────────────
+# launcher.bat ships with the repo (it reloads PATH and checks for ffmpeg) and reads its
+# settings from screencast.config.json, so it must not be regenerated here.
 
-Write-Step "Creating launcher..."
-
-$bat = @"
-@echo off
-title ScreenCast — Second Screen
-color 0B
-cd /d "$ProjectDir"
-echo.
-echo  ╔═══════════════════════════════════════╗
-echo  ║   ScreenCast  ^|  Monitor $monitorIndex  ^|  ${fps}fps    ║
-echo  ╚═══════════════════════════════════════╝
-echo.
-echo  Starting... open the printed URL on your iPad.
-echo  Press Ctrl+C to stop.
-echo.
-node server.js
-echo.
-echo  Server stopped. Press any key to close.
-pause > nul
-"@
+Write-Step "Checking launcher..."
 
 $batPath = Join-Path $ProjectDir 'launcher.bat'
-$bat | Out-File -FilePath $batPath -Encoding ascii
-Write-Ok "launcher.bat created"
+if (-not (Test-Path $batPath)) { Write-Fail "launcher.bat is missing from $ProjectDir"; exit 1 }
+Write-Ok "launcher.bat found"
 
 # ── 9. Desktop shortcut ───────────────────────────────────────────────────────
 
