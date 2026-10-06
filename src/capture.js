@@ -18,7 +18,7 @@ function getMonitorBounds(index) {
   }
   const fs   = require('fs');
   const path = require('path');
-  const tmp  = path.join(require('os').tmpdir(), `screencast-monitor-${index}.ps1`);
+  const tmp  = path.join(require('os').tmpdir(), `screencast-monitor-${index}-${process.pid}-${Date.now()}.ps1`);
 
   fs.writeFileSync(tmp, [
     'Add-Type -Assembly System.Windows.Forms',

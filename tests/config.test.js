@@ -75,9 +75,10 @@ test('resolveSettings: token from env beats file; numeric file token is stringif
   assert.equal(resolveSettings({ SCREENCAST_TOKEN: '' }, { token: 'filetok' }).token, 'filetok');
 });
 
-test('the committed screencast.config.json loads and resolves to sane values', () => {
-  const file = loadConfig(path.join(__dirname, '..'));
-  assert.notDeepEqual(file, {}, 'committed config must parse (BOM-safe)');
+test('the shipped screencast.config.example.json loads and resolves to sane values', () => {
+  const example = fs.readFileSync(path.join(__dirname, '..', 'screencast.config.example.json'));
+  const file = withConfig(example, (dir) => loadConfig(dir));
+  assert.notDeepEqual(file, {}, 'example config must parse (BOM-safe)');
   const s = resolveSettings({}, file);
   assert.ok(s.port >= 1 && s.fps >= 1 && s.quality >= 2 && s.monitor >= 0);
 });
