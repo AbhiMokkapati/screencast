@@ -1,4 +1,5 @@
 const os   = require('os');
+const qrcode = require('qrcode-terminal');
 const path = require('path');
 
 const { startCapture }                    = require('./src/capture');
@@ -84,17 +85,25 @@ if (tls) {
   listenAll(caServer, CA_PORT).catch(() => { /* already warned by the error handler */ });
 }
 
+const lanRank = (ip) => (/^(192\.168\.|10\.)/.test(ip) ? 0 : /^172\.(1[6-9]|2\d|3[01])\./.test(ip) ? 1 : 2);
+
 listenAll(server, PORT).then(() => {
   const ips = Object.values(os.networkInterfaces())
     .flat()
     .filter((i) => i.family === 'IPv4' && !i.internal)
-    .map((i) => i.address);
+    .map((i) => i.address)
+    .sort((a, b) => lanRank(a) - lanRank(b));
 
   const video = codec === 'h264' ? `h264 (${encoder}, ${settings.bitrate} Mbit/s)` : 'mjpeg';
   console.log('\n── ScreenCast ───────────────────────────────────────────');
   console.log(`  Monitor : ${MONITOR}   FPS : ${FPS}   Video : ${video}`);
   console.log('\n  Open on iPad Safari:');
   ips.forEach((ip) => console.log(`    ${SCHEME}://${ip}:${PORT}/?t=${TOKEN}`));
+  if (ips.length) {
+    // The QR code encodes the first URL (home-LAN addresses sorted first) so the iPad camera can open it.
+    console.log('\n  Or scan with the iPad camera:');
+    qrcode.generate(`${SCHEME}://${ips[0]}:${PORT}/?t=${TOKEN}`, { small: true }, (qr) => console.log(qr.replace(/^/gm, '    ')));
+  }
   if (tls) {
     console.log('\n  First time on an iPad? Trust this PC once by opening:');
     ips.forEach((ip) => console.log(`    http://${ip}:${CA_PORT}/`));

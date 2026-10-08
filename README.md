@@ -38,6 +38,8 @@ First time on an iPad? Trust this PC once by opening:
   http://192.168.1.20:9002/
 ```
 
+The server also prints a QR code for the `https://` address. Scan it with the iPad camera instead of typing the URL.
+
 ### One-time: trust the certificate (iPad)
 
 Safari only enables the hardware H.264 decoder on HTTPS pages. ScreenCast creates a local certificate authority the first time it runs (in `certs/`), and you trust it once on the iPad:
