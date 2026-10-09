@@ -56,7 +56,13 @@ try {
   capture = startCapture({ monitorIndex: MONITOR, fps: FPS, quality: QUALITY, scaleWidth: SCALE_W, scaleHeight: SCALE_H,
     codec, encoder, bitrateMbps: settings.bitrate });
 } catch (err) {
-  console.error('[capture] Failed to start:', err.message);
+  if (err.monitorNotFound) {
+    console.error(`[capture] ${err.message}`);
+    console.error('          Set "monitor" in screencast.config.json to 0 to capture your main display,');
+    console.error('          or install a virtual display driver for a second screen.');
+  } else {
+    console.error('[capture] Failed to start:', err.message);
+  }
   console.error('          Run `npm run list-displays` to see available monitors.');
   process.exit(1);
 }

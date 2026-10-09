@@ -23,7 +23,7 @@ function getMonitorBounds(index) {
   fs.writeFileSync(tmp, [
     'Add-Type -Assembly System.Windows.Forms',
     `$screens = [System.Windows.Forms.Screen]::AllScreens`,
-    `if (${index} -ge $screens.Count) { Write-Error "Monitor ${index} not found"; exit 1 }`,
+    `if (${index} -ge $screens.Count) { Write-Output "NOTFOUND:$($screens.Count)"; exit 0 }`,
     `$s = $screens[${index}]`,
     `Write-Output "$($s.Bounds.X),$($s.Bounds.Y),$($s.Bounds.Width),$($s.Bounds.Height)"`,
   ].join('\r\n'));
@@ -32,6 +32,16 @@ function getMonitorBounds(index) {
     const out = execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${tmp}"`, {
       timeout: 8000,
     }).toString().trim();
+
+    const missing = /NOTFOUND:(\d+)/.exec(out);
+    if (missing) {
+      const n = Number(missing[1]);
+      const err = new Error(
+        `Monitor ${index} not found (Windows reports ${n} display${n === 1 ? '' : 's'}; valid indexes: 0-${n - 1}).`
+      );
+      err.monitorNotFound = true;
+      throw err;
+    }
 
     // Strip any ANSI/BOM/whitespace the PS runtime may prepend
     const clean = out.replace(/[^\d,\-]/g, '').replace(/^,+|,+$/g, '');
@@ -42,6 +52,7 @@ function getMonitorBounds(index) {
     const [x, y, w, h] = parts;
     return { x, y, w, h };
   } catch (err) {
+    if (err.monitorNotFound) throw err;
     throw new Error(
       `Could not read bounds for monitor ${index}: ${err.message}\n` +
       `Run:  powershell "[System.Windows.Forms.Screen]::AllScreens | Format-Table"`
