@@ -220,18 +220,24 @@
         if (!paintQueued) { paintQueued = true; requestAnimationFrame(paintVideo); }
         send({ type: 'ack' });
       },
-      error: () => {                        // decode error: rebuild the decoder and wait for a key frame
+      error: (e) => {                       // decode error: rebuild the decoder and wait for a key frame
+        setStatus('Video decode error: ' + (e && e.message ? e.message : 'unknown'));
         const cfg = decoderCfg;
         closeDecoder();
         if (cfg) configureDecoder(cfg);
       },
     });
+    const decCfg = {
+      codec: 'avc1.' + hex(avcc[1]) + hex(avcc[2]) + hex(avcc[3]),
+      description: decoderCfg,
+      optimizeForLatency: true,
+    };
+    setStatus('Waiting for video… (' + decCfg.codec + ')');
+    VideoDecoder.isConfigSupported(decCfg).then((r) => {
+      if (!r.supported) setStatus('This iPad cannot decode ' + decCfg.codec + '; set "codec": "mjpeg" in screencast.config.json');
+    }, () => {});
     try {
-      decoder.configure({
-        codec: 'avc1.' + hex(avcc[1]) + hex(avcc[2]) + hex(avcc[3]),
-        description: decoderCfg,
-        optimizeForLatency: true,
-      });
+      decoder.configure(decCfg);
     } catch {
       closeDecoder();
       setStatus('Video decoder rejected the stream; set "codec": "mjpeg" in screencast.config.json');
@@ -270,6 +276,7 @@
     }
     ctx.drawImage(frame, 0, 0);
     frame.close();
+    if (frameCount === 0) setStatus('Connected', true);
     frameCount++;
   }
 
